@@ -7,26 +7,27 @@ public class Sender {
 
         // ----------------------------------------------------------------
         // 1. Parse command-line arguments
-        //    Usage: java Sender <rcv_ip> <rcv_data_port> <sender_ack_port>
-        //                       <input_file> <timeout_ms> [window_size]
+        // Usage: java Sender <rcv_ip> <rcv_data_port> <sender_ack_port>
+        // <input_file> <timeout_ms> [window_size]
         //
-        //    Omit window_size  -->  Stop-and-Wait
-        //    Provide window_size  -->  Go-Back-N (must be multiple of 4, <= 128)
+        // Omit window_size --> Stop-and-Wait
+        // Provide window_size --> Go-Back-N (must be multiple of 4, <= 128)
         // ----------------------------------------------------------------
         if (args.length < 5 || args.length > 6) {
-            System.err.println("Usage: java Sender <rcv_ip> <rcv_data_port> <sender_ack_port> <input_file> <timeout_ms> [window_size]");
+            System.err.println(
+                    "Usage: java Sender <rcv_ip> <rcv_data_port> <sender_ack_port> <input_file> <timeout_ms> [window_size]");
             System.exit(1);
         }
 
-        String  rcvIp        = args[0];
-        int     rcvDataPort  = Integer.parseInt(args[1]);
-        int     senderAckPort = Integer.parseInt(args[2]);
-        String  inputFile    = args[3];
-        int     timeoutMs    = Integer.parseInt(args[4]);
+        String rcvIp = args[0];
+        int rcvDataPort = Integer.parseInt(args[1]);
+        int senderAckPort = Integer.parseInt(args[2]);
+        String inputFile = args[3];
+        int timeoutMs = Integer.parseInt(args[4]);
 
         // Optional window size -- determines which protocol to use
-        int  windowSize  = 0;       // 0 means Stop-and-Wait
-        boolean useGBN   = false;
+        int windowSize = 0; // 0 means Stop-and-Wait
+        boolean useGBN = false;
 
         if (args.length == 6) {
             windowSize = Integer.parseInt(args[5]);
@@ -53,8 +54,8 @@ public class Sender {
 
         // ----------------------------------------------------------------
         // 3. Create UDP socket bound to sender_ack_port
-        //    The receiver sends ACKs back to this port.
-        //    The timeout controls how long we wait for each ACK.
+        // The receiver sends ACKs back to this port.
+        // The timeout controls how long we wait for each ACK.
         // ----------------------------------------------------------------
         DatagramSocket socket = new DatagramSocket(senderAckPort);
         socket.setSoTimeout(timeoutMs);
@@ -71,9 +72,9 @@ public class Sender {
         System.out.println();
 
         // ----------------------------------------------------------------
-        // TODO Issue #3: Handshake  (send SOT, wait for ACK 0)
+        // TODO Issue #3: Handshake (send SOT, wait for ACK 0)
         // TODO Issue #4: Stop-and-Wait data transfer + teardown
-        // TODO Issue #5: Go-Back-N  data transfer + teardown
+        // TODO Issue #5: Go-Back-N data transfer + teardown
         // TODO Issue #6: Integrate ChaosEngine packet reordering (GBN)
         // ----------------------------------------------------------------
 
