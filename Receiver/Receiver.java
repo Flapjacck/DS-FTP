@@ -52,7 +52,43 @@ public class Receiver {
         System.out.println();
 
         // ----------------------------------------------------------------
-        // TODO Issue #3: Handshake (wait for SOT, reply ACK 0)
+        // Issue #3: Handshake (wait for SOT, reply ACK 0)
+        // ----------------------------------------------------------------
+        // tracks total ACKs sent - needed for ChaosEngine dropping logic later
+        int ackCount = 0;
+
+        byte[] rcvBuf = new byte[DSPacket.MAX_PACKET_SIZE];
+        DatagramPacket rcvDatagram = new DatagramPacket(rcvBuf, rcvBuf.length);
+
+        // block until we receive the sender's SOT
+        System.out.println("[Handshake] Waiting for SOT...");
+        socket.receive(rcvDatagram);
+        DSPacket sotPacket = new DSPacket(rcvDatagram.getData());
+
+        // validate it's the right packet
+        if (sotPacket.getType() != DSPacket.TYPE_SOT || sotPacket.getSeqNum() != 0) {
+            System.err.println("[Handshake] Expected SOT (Type=0, Seq=0), got Type="
+                    + sotPacket.getType() + " Seq=" + sotPacket.getSeqNum());
+            socket.close();
+            System.exit(1);
+        }
+        System.out.println("[Handshake] Received SOT (Seq=0)");
+
+        // send ACK 0 back to sender's ACK port
+        ackCount++;
+        DSPacket ackPacket = new DSPacket(DSPacket.TYPE_ACK, 0, null);
+        byte[] ackBytes = ackPacket.toBytes();
+        DatagramPacket ackDatagram = new DatagramPacket(ackBytes, ackBytes.length, senderAddress, senderAckPort);
+
+        // let ChaosEngine decide if this ACK gets dropped
+        if (!ChaosEngine.shouldDrop(ackCount, rn)) {
+            socket.send(ackDatagram);
+            System.out.println("[Handshake] Sent ACK (Seq=0) -- connection established");
+        } else {
+            System.out.println("[Handshake] ACK (Seq=0) dropped by ChaosEngine (ackCount=" + ackCount + ")");
+        }
+
+        // ----------------------------------------------------------------
         // TODO Issue #4: Stop-and-Wait data receive + teardown
         // TODO Issue #5: Go-Back-N data receive + teardown
         // TODO Issue #6: Integrate ChaosEngine ACK dropping
