@@ -72,7 +72,52 @@ public class Sender {
         System.out.println();
 
         // ----------------------------------------------------------------
-        // TODO Issue #3: Handshake (send SOT, wait for ACK 0)
+        // Issue #3: Handshake (send SOT, wait for ACK 0)
+        // ----------------------------------------------------------------
+        long startTime = System.currentTimeMillis(); // timer starts when we send SOT
+
+        // build the start-of-transmission packet
+        DSPacket sotPacket = new DSPacket(DSPacket.TYPE_SOT, 0, null);
+        byte[] sotBytes = sotPacket.toBytes();
+        DatagramPacket sotDatagram = new DatagramPacket(sotBytes, sotBytes.length, rcvAddress, rcvDataPort);
+
+        // buffer for the ACK response
+        byte[] ackBuf = new byte[DSPacket.MAX_PACKET_SIZE];
+        DatagramPacket ackDatagram = new DatagramPacket(ackBuf, ackBuf.length);
+
+        int timeoutCount = 0;
+        boolean handshakeDone = false;
+
+        // retry loop - keep sending SOT until we get ACK 0 or hit the 3-timeout limit
+        while (!handshakeDone) {
+            socket.send(sotDatagram);
+            System.out.println("[Handshake] Sent SOT (Seq=0)");
+
+            try {
+                socket.receive(ackDatagram);
+                DSPacket ack = new DSPacket(ackDatagram.getData());
+
+                // check if this is the ACK we're looking for
+                if (ack.getType() == DSPacket.TYPE_ACK && ack.getSeqNum() == 0) {
+                    System.out.println("[Handshake] Received ACK (Seq=0) -- connection established");
+                    handshakeDone = true;
+                } else {
+                    System.out.println("[Handshake] Unexpected packet (Type=" + ack.getType()
+                            + ", Seq=" + ack.getSeqNum() + "), ignoring...");
+                }
+            } catch (SocketTimeoutException e) {
+                timeoutCount++;
+                System.out.println("[Handshake] Timeout #" + timeoutCount + ", retransmitting SOT...");
+                // fail after 3 consecutive timeouts - can't establish connection
+                if (timeoutCount >= 3) {
+                    System.out.println("Unable to transfer file.");
+                    socket.close();
+                    System.exit(1);
+                }
+            }
+        }
+
+        // ----------------------------------------------------------------
         // TODO Issue #4: Stop-and-Wait data transfer + teardown
         // TODO Issue #5: Go-Back-N data transfer + teardown
         // TODO Issue #6: Integrate ChaosEngine packet reordering (GBN)
