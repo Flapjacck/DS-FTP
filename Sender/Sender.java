@@ -118,7 +118,99 @@ public class Sender {
         }
 
         // ----------------------------------------------------------------
-        // TODO Issue #4: Stop-and-Wait data transfer + teardown
+        // Issue #4: Stop-and-Wait data transfer + teardown
+        // ----------------------------------------------------------------
+        if (!useGBN) {
+
+            FileInputStream fis = new FileInputStream(file);
+            int seq = 1; // first DATA starts at seq 1 (SOT used seq 0)
+            timeoutCount = 0;
+
+            byte[] chunk = new byte[DSPacket.MAX_PAYLOAD_SIZE];
+            int bytesRead = fis.read(chunk);
+
+            // send one packet at a time and wait for its ACK
+            while (bytesRead != -1) {
+                byte[] payload = new byte[bytesRead];
+                System.arraycopy(chunk, 0, payload, 0, bytesRead);
+
+                DSPacket dataPacket = new DSPacket(DSPacket.TYPE_DATA, seq, payload);
+                byte[] dataBytes = dataPacket.toBytes();
+                DatagramPacket dataDatagram = new DatagramPacket(dataBytes, dataBytes.length, rcvAddress, rcvDataPort);
+
+                boolean acked = false;
+                while (!acked) {
+                    socket.send(dataDatagram);
+                    System.out.println("[S&W] Sent DATA Seq=" + seq + " (" + bytesRead + " bytes)");
+
+                    try {
+                        socket.receive(ackDatagram);
+                        DSPacket ack = new DSPacket(ackDatagram.getData());
+
+                        // check it's the ACK we're waiting for
+                        if (ack.getType() == DSPacket.TYPE_ACK && ack.getSeqNum() == seq) {
+                            System.out.println("[S&W] Got ACK Seq=" + seq);
+                            acked = true;
+                            timeoutCount = 0; // reset counter on progress
+                            seq = (seq + 1) % 128;
+                        } else {
+                            System.out.println("[S&W] Wrong ACK (got Seq=" + ack.getSeqNum() + "), retransmitting...");
+                        }
+                    } catch (SocketTimeoutException e) {
+                        timeoutCount++;
+                        System.out.println("[S&W] Timeout #" + timeoutCount + " on Seq=" + seq + ", retransmitting...");
+                        // 3 consecutive timeouts on the same packet - give up
+                        if (timeoutCount >= 3) {
+                            System.out.println("Unable to transfer file.");
+                            fis.close();
+                            socket.close();
+                            System.exit(1);
+                        }
+                    }
+                }
+
+                bytesRead = fis.read(chunk);
+            }
+
+            fis.close();
+
+            // teardown - send EOT and wait for its ACK
+            int eotSeq = seq; // seq already advanced past the last data packet
+            DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, eotSeq, null);
+            byte[] eotBytes = eotPacket.toBytes();
+            DatagramPacket eotDatagram = new DatagramPacket(eotBytes, eotBytes.length, rcvAddress, rcvDataPort);
+
+            timeoutCount = 0;
+            boolean eotAcked = false;
+            while (!eotAcked) {
+                socket.send(eotDatagram);
+                System.out.println("[Teardown] Sent EOT Seq=" + eotSeq);
+
+                try {
+                    socket.receive(ackDatagram);
+                    DSPacket ack = new DSPacket(ackDatagram.getData());
+
+                    if (ack.getType() == DSPacket.TYPE_ACK && ack.getSeqNum() == eotSeq) {
+                        System.out.println("[Teardown] Got ACK for EOT");
+                        eotAcked = true;
+                    }
+                } catch (SocketTimeoutException e) {
+                    timeoutCount++;
+                    System.out.println("[Teardown] Timeout #" + timeoutCount + " on EOT, retransmitting...");
+                    if (timeoutCount >= 3) {
+                        System.out.println("Unable to transfer file.");
+                        socket.close();
+                        System.exit(1);
+                    }
+                }
+            }
+
+            // print total time from SOT send to EOT ACK receipt
+            long elapsed = System.currentTimeMillis() - startTime;
+            System.out.printf("Total Transmission Time: %.2f seconds%n", elapsed / 1000.0);
+        }
+
+        // ----------------------------------------------------------------
         // TODO Issue #5: Go-Back-N data transfer + teardown
         // TODO Issue #6: Integrate ChaosEngine packet reordering (GBN)
         // ----------------------------------------------------------------
