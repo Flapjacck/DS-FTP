@@ -89,7 +89,68 @@ public class Receiver {
         }
 
         // ----------------------------------------------------------------
-        // TODO Issue #4: Stop-and-Wait data receive + teardown
+        // Issue #4: Stop-and-Wait data receive + teardown
+        // ----------------------------------------------------------------
+        FileOutputStream fos = new FileOutputStream(outputFile);
+        int expectedSeq = 1; // first DATA packet should be seq 1
+        int lastAckedSeq = 0; // last seq we ACKed (SOT was seq 0)
+
+        System.out.println("[S&W] Waiting for data...");
+
+        while (true) {
+            // fresh datagram each iteration so old data doesn't bleed through
+            rcvDatagram = new DatagramPacket(rcvBuf, rcvBuf.length);
+            socket.receive(rcvDatagram);
+            DSPacket pkt = new DSPacket(rcvDatagram.getData());
+
+            if (pkt.getType() == DSPacket.TYPE_DATA) {
+
+                if (pkt.getSeqNum() == expectedSeq) {
+                    // in-order packet - write it and advance expectedSeq
+                    fos.write(pkt.getPayload());
+                    System.out.println("[S&W] Received DATA Seq=" + pkt.getSeqNum()
+                            + " (" + pkt.getLength() + " bytes), ACKing");
+                    lastAckedSeq = expectedSeq;
+                    expectedSeq = (expectedSeq + 1) % 128;
+                } else {
+                    // duplicate or out-of-order - re-ACK the last good seq
+                    System.out.println("[S&W] Out-of-order Seq=" + pkt.getSeqNum()
+                            + ", re-ACKing Seq=" + lastAckedSeq);
+                }
+
+                // send ACK (whether in-order or duplicate)
+                ackCount++;
+                DSPacket reply = new DSPacket(DSPacket.TYPE_ACK, lastAckedSeq, null);
+                byte[] replyBytes = reply.toBytes();
+                DatagramPacket replyDg = new DatagramPacket(replyBytes, replyBytes.length, senderAddress,
+                        senderAckPort);
+                if (!ChaosEngine.shouldDrop(ackCount, rn)) {
+                    socket.send(replyDg);
+                } else {
+                    System.out.println("[S&W] ACK Seq=" + lastAckedSeq + " dropped by ChaosEngine");
+                }
+
+            } else if (pkt.getType() == DSPacket.TYPE_EOT) {
+                // teardown - ACK the EOT then break out
+                System.out.println("[Teardown] Received EOT Seq=" + pkt.getSeqNum());
+                ackCount++;
+                DSPacket reply = new DSPacket(DSPacket.TYPE_ACK, pkt.getSeqNum(), null);
+                byte[] replyBytes = reply.toBytes();
+                DatagramPacket replyDg = new DatagramPacket(replyBytes, replyBytes.length, senderAddress,
+                        senderAckPort);
+                if (!ChaosEngine.shouldDrop(ackCount, rn)) {
+                    socket.send(replyDg);
+                    System.out.println("[Teardown] Sent ACK for EOT -- closing");
+                } else {
+                    System.out.println("[Teardown] ACK for EOT dropped by ChaosEngine");
+                }
+                break;
+            }
+        }
+
+        fos.close();
+
+        // ----------------------------------------------------------------
         // TODO Issue #5: Go-Back-N data receive + teardown
         // TODO Issue #6: Integrate ChaosEngine ACK dropping
         // ----------------------------------------------------------------
