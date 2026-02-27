@@ -8,13 +8,15 @@ public class Receiver {
         // ----------------------------------------------------------------
         // 1. Parse command-line arguments
         // Usage: java Receiver <sender_ip> <sender_ack_port>
-        // <rcv_data_port> <output_file> <RN>
+        // <rcv_data_port> <output_file> <RN> [window_size]
         //
         // RN = 0 --> no ACKs dropped
         // RN = X --> every Xth ACK is dropped (via ChaosEngine)
+        // Optional window_size: if omitted, receiver auto-detects (universal mode)
+        // If provided, enables explicit GBN mode with that window size
         // ----------------------------------------------------------------
-        if (args.length != 5) {
-            System.err.println("Usage: java Receiver <sender_ip> <sender_ack_port> <rcv_data_port> <output_file> <RN>");
+        if (args.length < 5 || args.length > 6) {
+            System.err.println("Usage: java Receiver <sender_ip> <sender_ack_port> <rcv_data_port> <output_file> <RN> [window_size]");
             System.exit(1);
         }
 
@@ -27,6 +29,21 @@ public class Receiver {
         if (rn < 0) {
             System.err.println("Error: RN must be >= 0.");
             System.exit(1);
+        }
+
+        // Optional window size for explicit GBN mode
+        int windowSize = 0; // 0 = auto-detect (universal mode)
+        boolean useGBN = false;
+
+        if (args.length == 6) {
+            windowSize = Integer.parseInt(args[5]);
+
+            // Validate GBN window size per spec
+            if (windowSize <= 0 || windowSize > 128 || windowSize % 4 != 0) {
+                System.err.println("Error: window_size must be a multiple of 4 and <= 128.");
+                System.exit(1);
+            }
+            useGBN = true;
         }
 
         // ----------------------------------------------------------------
@@ -92,16 +109,19 @@ public class Receiver {
         // Issue #4: Stop-and-Wait data receive + teardown
         // ----------------------------------------------------------------
         FileOutputStream fos = new FileOutputStream(outputFile);
-        int expectedSeq = 1; // first DATA packet should be seq 1
-        int lastAckedSeq = 0; // last seq we ACKed (SOT was seq 0)
+        
+        if (!useGBN) {
+            // Stop-and-Wait Receiver Mode
+            int expectedSeq = 1; // first DATA packet should be seq 1
+            int lastAckedSeq = 0; // last seq we ACKed (SOT was seq 0)
 
-        System.out.println("[S&W] Waiting for data...");
+            System.out.println("[S&W] Waiting for data...");
 
-        while (true) {
-            // fresh datagram each iteration so old data doesn't bleed through
-            rcvDatagram = new DatagramPacket(rcvBuf, rcvBuf.length);
-            socket.receive(rcvDatagram);
-            DSPacket pkt = new DSPacket(rcvDatagram.getData());
+            while (true) {
+                // fresh datagram each iteration so old data doesn't bleed through
+                rcvDatagram = new DatagramPacket(rcvBuf, rcvBuf.length);
+                socket.receive(rcvDatagram);
+                DSPacket pkt = new DSPacket(rcvDatagram.getData());
 
             if (pkt.getType() == DSPacket.TYPE_DATA) {
 
@@ -151,9 +171,103 @@ public class Receiver {
         fos.close();
 
         // ----------------------------------------------------------------
-        // TODO Issue #5: Go-Back-N data receive + teardown
-        // TODO Issue #6: Integrate ChaosEngine ACK dropping
+        // Issue #5 & #6: Go-Back-N data receive + teardown
         // ----------------------------------------------------------------
+        } else {
+            // GBN Receiver Mode
+            System.out.println("[GBN] Waiting for data (window=" + windowSize + ")...");
+            
+            // GBN receiver state
+            int expectedSeq = 1; // first expected in-order packet
+            int lastAckedSeq = 0; // last contiguous in-order seq delivered (cumulative ACK)
+            
+            // Receive buffer for out-of-order packets
+            DSPacket[] recvBuffer = new DSPacket[windowSize];
+            boolean[] hasPacket = new boolean[windowSize];
+            
+            while (true) {
+                // fresh datagram each iteration
+                rcvDatagram = new DatagramPacket(rcvBuf, rcvBuf.length);
+                socket.receive(rcvDatagram);
+                DSPacket pkt = new DSPacket(rcvDatagram.getData());
+
+                if (pkt.getType() == DSPacket.TYPE_DATA) {
+                    int seqNum = pkt.getSeqNum();
+                    
+                    // Check if packet is within receive window
+                    if (WindowHelper.inWindow(seqNum, expectedSeq, windowSize)) {
+                        // Within window - buffer it
+                        int bufIdx = WindowHelper.bufferIndex(seqNum, expectedSeq, windowSize);
+                        
+                        if (!hasPacket[bufIdx]) {
+                            // New packet - store it
+                            recvBuffer[bufIdx] = pkt;
+                            hasPacket[bufIdx] = true;
+                            System.out.println("[GBN] Received DATA Seq=" + seqNum
+                                    + " (" + pkt.getLength() + " bytes), buffered at index " + bufIdx);
+                        } else {
+                            // Duplicate within window
+                            System.out.println("[GBN] Received duplicate Seq=" + seqNum + ", buffered already");
+                        }
+                        
+                        // Attempt to deliver contiguous packets
+                        while (hasPacket[0]) {
+                            // Buffer[0] corresponds to expectedSeq
+                            DSPacket toDeliver = recvBuffer[0];
+                            fos.write(toDeliver.getPayload());
+                            System.out.println("[GBN] Delivered Seq=" + expectedSeq);
+                            
+                            lastAckedSeq = expectedSeq;
+                            expectedSeq = (expectedSeq + 1) % 128;
+                            
+                            // Shift buffer down
+                            for (int i = 0; i < windowSize - 1; i++) {
+                                recvBuffer[i] = recvBuffer[i + 1];
+                                hasPacket[i] = hasPacket[i + 1];
+                            }
+                            recvBuffer[windowSize - 1] = null;
+                            hasPacket[windowSize - 1] = false;
+                        }
+                        
+                    } else {
+                        // Outside window - discard silently
+                        System.out.println("[GBN] Received Seq=" + seqNum + " outside window [" 
+                                + expectedSeq + ", " + ((expectedSeq + windowSize - 1) % 128) + "), discarded");
+                    }
+                    
+                    // Send cumulative ACK for every packet (even duplicates/out-of-order)
+                    ackCount++;
+                    DSPacket reply = new DSPacket(DSPacket.TYPE_ACK, lastAckedSeq, null);
+                    byte[] replyBytes = reply.toBytes();
+                    DatagramPacket replyDg = new DatagramPacket(replyBytes, replyBytes.length, senderAddress,
+                            senderAckPort);
+                    if (!ChaosEngine.shouldDrop(ackCount, rn)) {
+                        socket.send(replyDg);
+                        System.out.println("[GBN] Sent cumulative ACK up to Seq=" + lastAckedSeq);
+                    } else {
+                        System.out.println("[GBN] Cumulative ACK up to Seq=" + lastAckedSeq + " dropped by ChaosEngine");
+                    }
+
+                } else if (pkt.getType() == DSPacket.TYPE_EOT) {
+                    // Teardown - ACK the EOT then break out
+                    System.out.println("[Teardown] Received EOT Seq=" + pkt.getSeqNum());
+                    ackCount++;
+                    DSPacket reply = new DSPacket(DSPacket.TYPE_ACK, pkt.getSeqNum(), null);
+                    byte[] replyBytes = reply.toBytes();
+                    DatagramPacket replyDg = new DatagramPacket(replyBytes, replyBytes.length, senderAddress,
+                            senderAckPort);
+                    if (!ChaosEngine.shouldDrop(ackCount, rn)) {
+                        socket.send(replyDg);
+                        System.out.println("[Teardown] Sent ACK for EOT -- closing");
+                    } else {
+                        System.out.println("[Teardown] ACK for EOT dropped by ChaosEngine");
+                    }
+                    break;
+                }
+            }
+
+            fos.close();
+        }
 
         socket.close();
     }
