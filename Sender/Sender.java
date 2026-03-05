@@ -71,9 +71,9 @@ public class Sender {
         System.out.println("Timeout      : " + timeoutMs + " ms");
         System.out.println();
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // Issue #3: Handshake (send SOT, wait for ACK 0)
-        // ----------------------------------------------------------------
+        // ================================================================
         long startTime = System.currentTimeMillis(); // timer starts when we send SOT
 
         // build the start-of-transmission packet
@@ -117,9 +117,9 @@ public class Sender {
             }
         }
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // Issue #4: Stop-and-Wait data transfer + teardown
-        // ----------------------------------------------------------------
+        // ================================================================
         if (!useGBN) {
 
             FileInputStream fis = new FileInputStream(file);
@@ -209,14 +209,16 @@ public class Sender {
             long elapsed = System.currentTimeMillis() - startTime;
             System.out.printf("Total Transmission Time: %.2f seconds%n", elapsed / 1000.0);
         } else {
-            // GBN Sender Mode
+            // ================================================================
+            // Issue #5: Implement Go-Back-N with buffered receiver
+            // and cumulative ACKs
+            // ================================================================
             System.out.println("[GBN] Starting Go-Back-N transmission with window size=" + windowSize);
             
             FileInputStream fis = new FileInputStream(file);
             
             // GBN sender state
             int base = 1;           // oldest unACKed packet sequence
-            int nextSeq = 1;        // next sequence to send
             timeoutCount = 0;       // timeout counter for current window
             
             // Queues for packet management
@@ -282,10 +284,12 @@ public class Sender {
             }
             
             // GBN main loop - send window, receive ACKs
+            // ackedCount tracks total packets ACKed (separate from mod-128 base)
+            int ackedCount = 0;
             int sendBufferIndex = 0;
             timeoutCount = 0;
-            
-            while (base <= totalPackets) {
+
+            while (ackedCount < totalPackets) {
                 // Refill window from sendBuffer
                 while (windowPackets.size() < windowSize && sendBufferIndex < totalPackets) {
                     windowPackets.add(sendBuffer.get(sendBufferIndex));
@@ -293,10 +297,14 @@ public class Sender {
                 }
                 
                 // Transmit window packets with permutation
-                System.out.println("[GBN] Transmitting window [base=" + base + ", nextSeq=" + nextSeq + "]");
+                System.out.println("[GBN] Transmitting window [base=" + base + ", ackedCount=" + ackedCount + "/" + totalPackets + "]");
                 java.util.List<DSPacket> toSend = new java.util.ArrayList<>(windowPackets);
                 
-                // Apply permutation in groups of 4
+                // ================================================================
+                // Issue #6: Integrate ChaosEngine for packet reordering
+                // Apply permutation in groups of 4: (i, i+1, i+2, i+3) → 
+                // (i+2, i, i+3, i+1)
+                // ================================================================
                 java.util.List<DSPacket> permuted = new java.util.ArrayList<>();
                 int i = 0;
                 while (i < toSend.size()) {
@@ -322,9 +330,9 @@ public class Sender {
                     System.out.println("[GBN] Sent Seq=" + pkt.getSeqNum());
                 }
                 
-                // Wait for ACKs
-                boolean windowComplete = false;
-                while (!windowComplete) {
+                // Collect ACKs until window advances or timeout
+                boolean windowAdvanced = false;
+                while (!windowAdvanced) {
                     try {
                         socket.receive(ackDatagram);
                         DSPacket ack = new DSPacket(ackDatagram.getData());
@@ -333,26 +341,27 @@ public class Sender {
                             int ackSeq = ack.getSeqNum();
                             System.out.println("[GBN] Received ACK Seq=" + ackSeq);
                             
-                            // Check if ACK is for packets in current window
-                            if (WindowHelper.inWindow(ackSeq, base, windowSize) || ackSeq >= base) {
-                                // Valid ACK - advance base
-                                if (ackSeq >= base) {
-                                    int advanceBy = (ackSeq - base + 1 + 128) % 128;
-                                    if (advanceBy == 0) advanceBy = 1;
-                                    
-                                    for (int j = 0; j < advanceBy && windowPackets.size() > 0; j++) {
-                                        windowPackets.remove(0);
-                                    }
-                                    
-                                    base = (ackSeq + 1) % 128;
-                                    timeoutCount = 0;
-                                    System.out.println("[GBN] Window advanced, new base=" + base);
+                            // Check if ACK is within our current send window
+                            if (WindowHelper.inWindow(ackSeq, base, windowSize)) {
+                                // Compute how many packets this ACK covers
+                                int newly = (ackSeq - base + 128) % 128 + 1;
+                                newly = Math.min(newly, windowPackets.size()); // safety cap
+                                
+                                for (int j = 0; j < newly; j++) {
+                                    windowPackets.remove(0);
                                 }
+                                ackedCount += newly;
+                                base = (ackSeq + 1) % 128;
+                                timeoutCount = 0;
+                                System.out.println("[GBN] Window advanced by " + newly
+                                        + ", base=" + base + ", ackedCount=" + ackedCount);
+                                windowAdvanced = true; // re-fill window and send more
                             }
+                            // else: stale ACK below window, ignore
                             
-                            // Check if all packets have been ACKed
-                            if (base > totalPackets && windowPackets.isEmpty()) {
-                                windowComplete = true;
+                            // Done if all packets ACKed
+                            if (ackedCount >= totalPackets) {
+                                windowAdvanced = true;
                             }
                         }
                     } catch (SocketTimeoutException e) {
@@ -365,7 +374,8 @@ public class Sender {
                             System.exit(1);
                         }
                         
-                        // Retransmit entire window
+                        // Retransmit entire window on timeout
+                        windowAdvanced = true;
                         break;
                     }
                 }
@@ -373,8 +383,9 @@ public class Sender {
             
             System.out.println("[GBN] All packets sent and ACKed.");
             
-            // Send EOT
-            int eotSeq = nextSeq;
+            // EOT seq = (last DATA seq + 1) mod 128
+            // base is already pointing one past the last ACKed seq
+            int eotSeq = base;
             DSPacket eotPacket = new DSPacket(DSPacket.TYPE_EOT, eotSeq, null);
             byte[] eotBytes = eotPacket.toBytes();
             DatagramPacket eotDatagram = new DatagramPacket(eotBytes, eotBytes.length, rcvAddress, rcvDataPort);

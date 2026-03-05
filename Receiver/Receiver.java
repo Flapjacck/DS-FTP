@@ -68,9 +68,9 @@ public class Receiver {
         System.out.println("Reliability  : RN=" + rn + (rn == 0 ? " (no drops)" : " (drop every " + rn + "th ACK)"));
         System.out.println();
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // Issue #3: Handshake (wait for SOT, reply ACK 0)
-        // ----------------------------------------------------------------
+        // ================================================================
         // tracks total ACKs sent - needed for ChaosEngine dropping logic later
         int ackCount = 0;
 
@@ -105,9 +105,9 @@ public class Receiver {
             System.out.println("[Handshake] ACK (Seq=0) dropped by ChaosEngine (ackCount=" + ackCount + ")");
         }
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // Issue #4: Stop-and-Wait data receive + teardown
-        // ----------------------------------------------------------------
+        // ================================================================
         FileOutputStream fos = new FileOutputStream(outputFile);
         
         if (!useGBN) {
@@ -170,9 +170,10 @@ public class Receiver {
 
         fos.close();
 
-        // ----------------------------------------------------------------
-        // Issue #5 & #6: Go-Back-N data receive + teardown
-        // ----------------------------------------------------------------
+        // ================================================================
+        // Issue #5: Implement Go-Back-N with buffered receiver and 
+        // cumulative ACKs
+        // ================================================================
         } else {
             // GBN Receiver Mode
             System.out.println("[GBN] Waiting for data (window=" + windowSize + ")...");
@@ -241,6 +242,11 @@ public class Receiver {
                     byte[] replyBytes = reply.toBytes();
                     DatagramPacket replyDg = new DatagramPacket(replyBytes, replyBytes.length, senderAddress,
                             senderAckPort);
+                    
+                    // ================================================================
+                    // Issue #6: Integrate ChaosEngine for ACK loss (every Nth ACK
+                    // is dropped based on RN argument)
+                    // ================================================================
                     if (!ChaosEngine.shouldDrop(ackCount, rn)) {
                         socket.send(replyDg);
                         System.out.println("[GBN] Sent cumulative ACK up to Seq=" + lastAckedSeq);
