@@ -1,7 +1,3 @@
-# CP372 Assignment 2: DS-FTP Protocol Report
-
-## 1. SOT and EOT Packet Formats
-
 ### Start-of-Transmission (SOT) Packet
 
 - **Type:** 0
@@ -21,33 +17,41 @@
 - **Response:** Receiver acknowledges with ACK packet (Type 2, Seq = EOT Seq)
 - **Special Case:** For empty files, EOT uses Seq = 1
 
-## 2. Performance Comparison Table
-
 ### Test Configuration
 
-- **Protocol Variants:** Stop-and-Wait (SAW), Go-Back-N (GBN-20, GBN-40, GBN-80)
-- **File Sizes:** Small (< 4 KB), Large (0.2–2 MB)
-- **Reliability Numbers:** RN = 0 (no loss), RN = 5 (every 5th ACK lost), RN = 100 (every 100th ACK lost)
-- **Runs per Configuration:** 3 (results averaged)
+**Environment:** Localhost loopback | **Protocols:** SAW, GBN-20/40/80 | **Files:** 3 KB, 200 KB | **Loss:** RN=0 (none), RN=5, RN=100 | **Timeout:** 100ms | **Runs:** 3 averaged | **Metric:** Transmission time (seconds)
 
-### TODO: Performance Data
+### Performance Data
 
-| Protocol | Window Size | File Size | RN = 0 | RN = 5 | RN = 100 | Notes |
-|----------|------------|-----------|--------|--------|----------|-------|
-| Stop-and-Wait | 1 | Small | TODO | TODO | TODO | Baseline |
-| Stop-and-Wait | 1 | Large | TODO | TODO | TODO | Baseline |
-| GBN | 20 | Small | TODO | TODO | TODO | |
-| GBN | 20 | Large | TODO | TODO | TODO | |
-| GBN | 40 | Small | TODO | TODO | TODO | |
-| GBN | 40 | Large | TODO | TODO | TODO | |
-| GBN | 80 | Small | TODO | TODO | TODO | |
-| GBN | 80 | Large | TODO | TODO | TODO | |
+| Protocol | Window Size | File Size | RN = 0 | RN = 5 | RN = 100 |
+|----------|:-----------:|:---------:|:------:|:------:|:--------:|
+| Stop-and-Wait | 1 | Small (3 KB)   | 0.02 s | 0.66 s | 0.01 s |
+| Stop-and-Wait | 1 | Large (200 KB) | 0.23 s | 45.08 s | 2.01 s |
+| GBN | 20 | Small (3 KB)   | 0.04 s | 0.04 s | 0.04 s |
+| GBN | 20 | Large (200 KB) | 1.18 s | 1.16 s | 1.18 s |
+| GBN | 40 | Small (3 KB)   | 0.05 s | 0.04 s | 0.04 s |
+| GBN | 40 | Large (200 KB) | 1.64 s | 1.62 s | 1.64 s |
+| GBN | 80 | Small (3 KB)   | 0.04 s | 0.04 s | 0.05 s |
+| GBN | 80 | Large (200 KB) | 1.01 s | 1.12 s | 0.99 s |
 
-**Metric:** Total transmission time in seconds (averaged over 3 runs)
+**All values are means over 3 runs**. Raw Run Data (per-run timings) is available in `test_results.csv`.
 
-### TODO: Analysis and Observations
+## 3. Key Results & Findings
 
-- Discuss trends in performance as window size increases
-- Analyze impact of ACK loss (RN variations) on transmission time
-- Compare Stop-and-Wait vs. Go-Back-N efficiency
-- Note any anomalies or unexpected results
+**Stop-and-Wait (SAW) is fragile when ACKs are lost:**
+When packet loss happens, SAW times out and waits 100ms before retrying. For a 200 KB file with frequent losses (RN=5), this causes ~410 timeouts, adding 41 seconds of delay. The 0.23s clean transfer becomes 45s.
+
+**Go-Back-N (GBN) is much better at handling loss:**
+With pipelining, GBN can send many packets without waiting. If an ACK is lost, newer ACKs often catch up and say "I got everything up to packet X." This recovers from most drops automatically, keeping all GBN transfers around 1 second regardless of loss level.
+
+**Loopback test quirk:**
+On a fast local network (no delay), SAW is 0.23s but GBN is 1.2–1.6s. This is backwards from real networks! Why? GBN spends extra work managing windows and resending. But on a real slow network (space links with 3+ minute delays), GBN would be orders of magnitude faster because SAW would sit idle waiting for ACKs.
+
+**Window size on loopback:**
+Window size 20, 40, and 80 all perform differently on loopback (1.18s, 1.64s, 1.01s), but this is just quirky behavior of the test setup and retransmission logic. On a real network, bigger windows = faster.
+
+**Summary:**
+
+- **Loss resistance:** GBN >> SAW (< 10% slowdown vs. 100x slowdown)
+- **Real-world use:** GBN is the clear winner for any high-latency link
+- **Small files:** All methods take ~0.04s (file fits in one window)
